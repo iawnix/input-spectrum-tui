@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use app::{AppCommand, AppConfig, AppState, Mode, Theme};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -52,7 +52,7 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
 
     loop {
         for input_event in global_input.drain() {
-            app.handle_global_input(input_event);
+            app.handle_global_key(input_event);
         }
 
         terminal.draw(|frame| ui::draw(frame, &app))?;
@@ -66,12 +66,8 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
                         break;
                     }
                 }
-                Event::Mouse(mouse) => {
-                    let width = terminal.size()?.width;
-                    app.handle_mouse(mouse, width);
-                }
                 Event::Resize(_, _) => {}
-                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
+                Event::Mouse(_) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
         }
 
@@ -92,7 +88,6 @@ fn setup_terminal() -> io::Result<Tui> {
     execute!(
         out,
         EnterAlternateScreen,
-        EnableMouseCapture,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     Terminal::new(CrosstermBackend::new(out))
@@ -106,7 +101,6 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             stdout(),
             PopKeyboardEnhancementFlags,
-            DisableMouseCapture,
             LeaveAlternateScreen
         );
     }
@@ -196,7 +190,7 @@ fn parse_mode(value: &str) -> Result<Mode, String> {
 
 fn print_help() {
     println!(
-        "inputspectrum\n\nUSAGE:\n    inputspectrum [--fps 60] [--bars 80] [--theme cyber|mono|amber] [--mode bars|wave|peaks]\n\nCONTROLS:\n    q/Esc      quit\n    space      pause/resume\n    tab        switch mode\n    1/2/3      switch theme\n    +/-        sensitivity\n    mouse      click, drag, move, wheel inject pulses\n"
+        "inputspectrum\n\nUSAGE:\n    inputspectrum [--fps 60] [--bars 80] [--theme cyber|mono|amber] [--mode bars|wave|peaks]\n\nCONTROLS:\n    q/Esc      quit\n    space      pause/resume\n    tab        switch mode\n    1/2/3      switch theme\n    +/-        sensitivity\n"
     );
 }
 

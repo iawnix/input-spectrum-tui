@@ -2,9 +2,10 @@
 name = "inputspectrum"
 version = "0.1.0"
 edition = "2021"
-description = "Input-driven terminal spectrum wall for keyboard and mouse events."
+description = "Keyboard-driven terminal spectrum wall."
 
 [dependencies]
 crossterm = "0.29"
 evdev = "0.13"
 ratatui = "0.29"
+x11 = { version = "2.21", features = ["xlib", "xrecord"] }

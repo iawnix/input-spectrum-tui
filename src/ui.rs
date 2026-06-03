@@ -34,13 +34,10 @@ fn draw_spectrum(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             let band_index = column * band_count / visible_bars;
             let band = &app.bands[band_index];
             let level = level_for_mode(app.mode, band.energy, band.peak, column, visible_bars);
-            let selected = app.selected_band == Some(band_index);
             let active = level >= threshold;
             let peak = band.peak >= threshold && band.peak < threshold + (1.0 / height as f32);
 
-            let (glyph, style) = if selected && active {
-                ("█", Style::default().fg(Color::White).bg(theme_accent(app.theme)))
-            } else if active {
+            let (glyph, style) = if active {
                 ("█", Style::default().fg(event_color(app.theme, band.last_event)))
             } else if peak {
                 ("▀", Style::default().fg(theme_peak(app.theme)))
@@ -65,22 +62,14 @@ fn level_for_mode(mode: Mode, energy: f32, peak: f32, column: usize, width: usiz
         Mode::Peaks => energy.max(peak * 0.72),
         Mode::Wave => {
             let phase = column as f32 / width.max(1) as f32;
-            let ripple = (phase * std::f32::consts::TAU).sin().abs() * 0.12;
-            (energy * 0.88 + ripple).clamp(0.0, 1.0)
+            let ripple = ((phase * std::f32::consts::TAU * 2.0).sin() * 0.5 + 0.5) * 0.10;
+            (energy.powf(0.82) * 0.90 + ripple).clamp(0.0, 1.0)
         }
     }
 }
 
 fn near_wave(level: f32, threshold: f32, height: usize) -> bool {
     (level - threshold).abs() <= (1.0 / height.max(1) as f32) * 0.65
-}
-
-fn theme_accent(theme: Theme) -> Color {
-    match theme {
-        Theme::Cyber => Color::Cyan,
-        Theme::Mono => Color::White,
-        Theme::Amber => Color::Yellow,
-    }
 }
 
 fn theme_border(theme: Theme) -> Color {
@@ -112,24 +101,15 @@ fn event_color(theme: Theme, event: Option<EventKind>) -> Color {
         Theme::Cyber => match event {
             Some(EventKind::Key) => Color::Cyan,
             Some(EventKind::SpecialKey) => Color::LightBlue,
-            Some(EventKind::Click) => Color::Magenta,
-            Some(EventKind::Drag) => Color::LightMagenta,
-            Some(EventKind::Move) => Color::Green,
-            Some(EventKind::Wheel) => Color::Yellow,
             None => Color::Blue,
         },
         Theme::Mono => match event {
-            Some(EventKind::Click | EventKind::Wheel) => Color::White,
-            Some(EventKind::Move | EventKind::Drag) => Color::Gray,
+            Some(EventKind::SpecialKey) => Color::Gray,
             _ => Color::White,
         },
         Theme::Amber => match event {
             Some(EventKind::Key) => Color::Yellow,
             Some(EventKind::SpecialKey) => Color::LightYellow,
-            Some(EventKind::Click) => Color::LightRed,
-            Some(EventKind::Drag) => Color::Red,
-            Some(EventKind::Move) => Color::Rgb(210, 140, 60),
-            Some(EventKind::Wheel) => Color::White,
             None => Color::Rgb(180, 104, 32),
         },
     }

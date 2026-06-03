@@ -1,20 +1,16 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::global_input::GlobalInputEvent;
+use crate::global_input::GlobalKeyEvent;
 
 const EVENT_WINDOW: Duration = Duration::from_secs(1);
 const MAX_EVENTS: usize = 512;
-const PEAK_DECAY: f32 = 0.86;
-const ENERGY_DECAY_BASE: f32 = 0.78;
-const MOVE_EVENT_SCALE: f32 = 0.32;
-const CLICK_EVENT_SCALE: f32 = 1.25;
-const KEY_EVENT_SCALE: f32 = 1.0;
-const WHEEL_EVENT_SCALE: f32 = 1.6;
+const PEAK_DECAY: f32 = 0.90;
+const ENERGY_DECAY_BASE: f32 = 0.82;
+const KEY_EVENT_SCALE: f32 = 0.92;
+const WAVE_SPREAD: isize = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -44,10 +40,6 @@ pub enum Theme {
 pub enum EventKind {
     Key,
     SpecialKey,
-    Click,
-    Drag,
-    Move,
-    Wheel,
 }
 
 #[derive(Debug, Clone)]
@@ -101,13 +93,10 @@ pub struct AppState {
     pub sensitivity: f32,
     pub event_count: u64,
     pub key_count: u64,
-    pub mouse_count: u64,
-    pub selected_band: Option<usize>,
-    pub mouse_position: Option<(u16, u16)>,
     pub last_event: Option<EventKind>,
     pub last_key_label: String,
+    phase: usize,
     events: VecDeque<Instant>,
-    last_mouse_position: Option<(u16, u16)>,
 }
 
 impl AppState {
@@ -121,13 +110,10 @@ impl AppState {
             sensitivity: 1.0,
             event_count: 0,
             key_count: 0,
-            mouse_count: 0,
-            selected_band: None,
-            mouse_position: None,
             last_event: None,
             last_key_label: String::from("-"),
+            phase: 0,
             events: VecDeque::with_capacity(MAX_EVENTS),
-            last_mouse_position: None,
         }
     }
 
@@ -214,145 +200,54 @@ impl AppState {
         AppCommand::None
     }
 
-    pub fn handle_global_input(&mut self, event: GlobalInputEvent) {
-        match event {
-            GlobalInputEvent::Key { code } => {
-                let band = code_to_band(code, self.bands.len());
-                self.inject_at(band, EventKind::Key, KEY_EVENT_SCALE);
-                self.key_count += 1;
-                self.last_key_label = format!("key:{code}");
-            }
-            GlobalInputEvent::Button { code } => {
-                let band = code_to_band(code, self.bands.len());
-                self.selected_band = Some(band);
-                self.inject_at(band, EventKind::Click, CLICK_EVENT_SCALE);
-                self.mouse_count += 1;
-            }
-            GlobalInputEvent::Move { code, value } => {
-                let band = motion_to_band(code, value, self.bands.len());
-                let amount = MOVE_EVENT_SCALE + (value.unsigned_abs().min(40) as f32 / 40.0) * 0.85;
-                self.inject_at(band, EventKind::Move, amount);
-            }
-            GlobalInputEvent::Wheel { code, value } => {
-                let band = code_to_band(code, self.bands.len());
-                let direction = if value < 0 { -1 } else { 1 };
-                self.inject_sweep(band, direction, WHEEL_EVENT_SCALE);
-                self.mouse_count += 1;
-            }
-        }
-    }
-
-    pub fn handle_mouse(&mut self, mouse: MouseEvent, width: u16) {
-        self.mouse_position = Some((mouse.column, mouse.row));
-        let band = mouse_to_band(mouse.column, width, self.bands.len());
-
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left)
-            | MouseEventKind::Down(MouseButton::Right)
-            | MouseEventKind::Down(MouseButton::Middle) => {
-                self.selected_band = Some(band);
-                self.inject_at(band, EventKind::Click, CLICK_EVENT_SCALE);
-                self.mouse_count += 1;
-            }
-            MouseEventKind::Drag(_) => {
-                self.selected_band = Some(band);
-                self.inject_at(band, EventKind::Drag, 0.85);
-                self.inject_neighbors(band, EventKind::Drag, 0.35, 3);
-                self.mouse_count += 1;
-            }
-            MouseEventKind::Moved => {
-                let motion = self
-                    .last_mouse_position
-                    .map(|(last_x, last_y)| {
-                        let dx = mouse.column.abs_diff(last_x);
-                        let dy = mouse.row.abs_diff(last_y);
-                        (dx + dy).min(20) as f32 / 20.0
-                    })
-                    .unwrap_or(0.15);
-                self.inject_at(band, EventKind::Move, MOVE_EVENT_SCALE + motion * 0.65);
-            }
-            MouseEventKind::ScrollUp => {
-                self.inject_sweep(band, -1, WHEEL_EVENT_SCALE);
-                self.mouse_count += 1;
-            }
-            MouseEventKind::ScrollDown => {
-                self.inject_sweep(band, 1, WHEEL_EVENT_SCALE);
-                self.mouse_count += 1;
-            }
-            MouseEventKind::ScrollLeft => {
-                self.inject_sweep(0, 1, WHEEL_EVENT_SCALE * 0.8);
-                self.mouse_count += 1;
-            }
-            MouseEventKind::ScrollRight => {
-                let last = self.bands.len().saturating_sub(1);
-                self.inject_sweep(last, -1, WHEEL_EVENT_SCALE * 0.8);
-                self.mouse_count += 1;
-            }
-            MouseEventKind::Up(_) => {}
-        }
-
-        self.last_mouse_position = Some((mouse.column, mouse.row));
+    pub fn handle_global_key(&mut self, event: GlobalKeyEvent) {
+        let band = dynamic_key_band(event.code, self.bands.len(), self.phase);
+        self.inject_wave_packet(band, EventKind::Key, KEY_EVENT_SCALE);
+        self.key_count += 1;
+        self.last_key_label = format!("key:{}", event.code);
     }
 
     fn inject_fixed(&mut self, seed: usize, kind: EventKind, amount: f32) {
         let band = if self.bands.is_empty() {
             0
         } else {
-            (seed * self.bands.len() / 10).min(self.bands.len() - 1)
+            dynamic_key_band(seed as u16, self.bands.len(), self.phase)
         };
-        self.inject_at(band, kind, amount);
+        self.inject_wave_packet(band, kind, amount);
     }
 
     pub fn inject_at(&mut self, band_index: usize, kind: EventKind, amount: f32) {
+        self.inject_wave_packet(band_index, kind, amount);
+    }
+
+    fn inject_wave_packet(&mut self, band_index: usize, kind: EventKind, amount: f32) {
         if self.bands.is_empty() {
             return;
         }
 
         let now = Instant::now();
         self.record_event(now);
-        let rate_boost = (self.events.len() as f32 / 24.0).min(1.4);
-        let amount = amount * self.sensitivity * (1.0 + rate_boost);
-        let band_index = band_index.min(self.bands.len() - 1);
+        self.phase = self.phase.wrapping_add(5 + self.events.len());
 
-        self.raise_band(band_index, kind, amount);
-        self.inject_neighbors(band_index, kind, amount * 0.36, 2);
+        let rate_boost = (self.events.len() as f32 / 22.0).min(1.6);
+        let amount = amount * self.sensitivity * (1.0 + rate_boost);
+        let center = band_index.min(self.bands.len() - 1) as isize;
+        let len = self.bands.len() as isize;
+        let drift = ((self.phase % 11) as isize) - 5;
+
+        for offset in -WAVE_SPREAD..=WAVE_SPREAD {
+            let idx = (center + offset + drift).rem_euclid(len) as usize;
+            let distance = offset.unsigned_abs() as f32;
+            let bell = (-0.5 * (distance / 3.1).powi(2)).exp();
+            let shimmer = 0.82 + (((self.phase + idx) % 7) as f32 * 0.035);
+            self.raise_band(idx, kind, amount * bell * shimmer);
+        }
+
+        let echo = (center + drift * 3 + (len / 3)).rem_euclid(len) as usize;
+        self.raise_band(echo, kind, amount * 0.32);
 
         self.event_count += 1;
         self.last_event = Some(kind);
-    }
-
-    fn inject_neighbors(&mut self, center: usize, kind: EventKind, amount: f32, radius: usize) {
-        for offset in 1..=radius {
-            let attenuated = amount / (offset as f32 + 1.0);
-            if center >= offset {
-                self.raise_band(center - offset, kind, attenuated);
-            }
-            if center + offset < self.bands.len() {
-                self.raise_band(center + offset, kind, attenuated);
-            }
-        }
-    }
-
-    fn inject_sweep(&mut self, start: usize, direction: i8, amount: f32) {
-        let len = self.bands.len();
-        if len == 0 {
-            return;
-        }
-
-        let start = start.min(len - 1);
-        for step in 0..8 {
-            let idx = if direction < 0 {
-                start.saturating_sub(step)
-            } else {
-                (start + step).min(len - 1)
-            };
-            let falloff = 1.0 - step as f32 / 10.0;
-            self.raise_band(idx, EventKind::Wheel, amount * falloff);
-        }
-
-        self.record_event(Instant::now());
-        self.event_count += 1;
-        self.last_event = Some(EventKind::Wheel);
     }
 
     fn raise_band(&mut self, index: usize, kind: EventKind, amount: f32) {
@@ -389,14 +284,6 @@ pub fn sanitize_level(value: f32) -> f32 {
     }
 }
 
-pub fn mouse_to_band(column: u16, width: u16, band_count: usize) -> usize {
-    if band_count == 0 || width == 0 {
-        return 0;
-    }
-    let normalized = column.min(width.saturating_sub(1)) as usize;
-    (normalized * band_count / width as usize).min(band_count - 1)
-}
-
 pub fn key_to_band(code: KeyCode, band_count: usize) -> usize {
     if band_count == 0 {
         return 0;
@@ -426,19 +313,11 @@ pub fn key_to_band(code: KeyCode, band_count: usize) -> usize {
     stable_hash(value) % band_count
 }
 
-pub fn code_to_band(code: u16, band_count: usize) -> usize {
+pub fn dynamic_key_band(code: u16, band_count: usize, phase: usize) -> usize {
     if band_count == 0 {
         return 0;
     }
-    stable_hash(code as usize) % band_count
-}
-
-pub fn motion_to_band(code: u16, value: i32, band_count: usize) -> usize {
-    if band_count == 0 {
-        return 0;
-    }
-    let signed = value.unsigned_abs() as usize;
-    stable_hash(code as usize ^ signed.rotate_left(3)) % band_count
+    stable_hash((code as usize).wrapping_add(phase.rotate_left(3))) % band_count
 }
 
 fn stable_hash(value: usize) -> usize {
@@ -496,23 +375,19 @@ mod tests {
     }
 
     #[test]
-    fn mouse_mapping_stays_in_range() {
-        for width in [1, 2, 80, 120] {
-            for column in [0, 1, 30, 79, 300] {
-                let band = mouse_to_band(column, width, 64);
-                assert!(band < 64);
+    fn global_code_mapping_stays_in_range() {
+        for band_count in [1, 2, 8, 80, 240] {
+            for code in [0, 1, 30, 272, u16::MAX] {
+                assert!(dynamic_key_band(code, band_count, 37) < band_count);
             }
         }
     }
 
     #[test]
-    fn global_code_mapping_stays_in_range() {
-        for band_count in [1, 2, 8, 80, 240] {
-            for code in [0, 1, 30, 272, u16::MAX] {
-                assert!(code_to_band(code, band_count) < band_count);
-                assert!(motion_to_band(code, -40, band_count) < band_count);
-            }
-        }
+    fn dynamic_mapping_moves_repeated_keys() {
+        let first = dynamic_key_band(30, 80, 0);
+        let second = dynamic_key_band(30, 80, 7);
+        assert_ne!(first, second);
     }
 
     #[test]
