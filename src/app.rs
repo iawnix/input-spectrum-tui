@@ -31,7 +31,7 @@ impl Mode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
-    Cyber,
+    Nord,
     Mono,
     Amber,
 }
@@ -70,9 +70,9 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            bars: 80,
+            bars: 120,
             fps: 30,
-            theme: Theme::Cyber,
+            theme: Theme::Nord,
             mode: Mode::Bars,
         }
     }
@@ -156,7 +156,7 @@ impl AppState {
                 self.last_key_label = String::from("tab");
             }
             KeyCode::Char('1') => {
-                self.theme = Theme::Cyber;
+                self.theme = Theme::Nord;
                 self.inject_fixed(1, EventKind::SpecialKey, 1.2);
                 self.last_key_label = String::from("1");
             }

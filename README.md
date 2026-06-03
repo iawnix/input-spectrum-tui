@@ -7,7 +7,7 @@ The global keyboard listener follows the same broad route as Screenkey: it first
 ## Run
 
 ```bash
-cargo run -- --fps 60 --bars 96 --theme cyber
+cargo run -- --fps 60 --bars 120 --theme nord
 ```
 
 Debug a startup hang:
@@ -25,7 +25,7 @@ INPUTSPECTRUM_BACKEND=none cargo run -- --fps 60
 - `q` / `Esc`: quit
 - `space`: pause or resume decay/render updates
 - `tab`: switch mode (`bars`, `wave`, `peaks`)
-- `1`, `2`, `3`: switch theme (`cyber`, `mono`, `amber`)
+- `1`, `2`, `3`: switch theme (`nord`, `mono`, `amber`)
 - `+` / `-`: adjust sensitivity
 
 ## Scope

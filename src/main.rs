@@ -172,10 +172,12 @@ fn parse_range(value: &str, flag: &str, min: u16, max: u16) -> Result<u16, Strin
 
 fn parse_theme(value: &str) -> Result<Theme, String> {
     match value {
-        "cyber" => Ok(Theme::Cyber),
+        "nord" | "cyber" => Ok(Theme::Nord),
         "mono" => Ok(Theme::Mono),
         "amber" => Ok(Theme::Amber),
-        _ => Err(String::from("--theme must be one of: cyber, mono, amber")),
+        _ => Err(String::from(
+            "--theme must be one of: nord, mono, amber",
+        )),
     }
 }
 
@@ -190,7 +192,7 @@ fn parse_mode(value: &str) -> Result<Mode, String> {
 
 fn print_help() {
     println!(
-        "inputspectrum\n\nUSAGE:\n    inputspectrum [--fps 60] [--bars 80] [--theme cyber|mono|amber] [--mode bars|wave|peaks]\n\nCONTROLS:\n    q/Esc      quit\n    space      pause/resume\n    tab        switch mode\n    1/2/3      switch theme\n    +/-        sensitivity\n"
+        "inputspectrum\n\nUSAGE:\n    inputspectrum [--fps 60] [--bars 120] [--theme nord|mono|amber] [--mode bars|wave|peaks]\n\nCONTROLS:\n    q/Esc      quit\n    space      pause/resume\n    tab        switch mode\n    1/2/3      switch theme\n    +/-        sensitivity\n"
     );
 }
 
@@ -201,9 +203,9 @@ mod tests {
     #[test]
     fn parses_defaults() {
         let config = parse_args(Vec::<String>::new()).unwrap();
-        assert_eq!(config.bars, 80);
+        assert_eq!(config.bars, 120);
         assert_eq!(config.fps, 30);
-        assert_eq!(config.theme, Theme::Cyber);
+        assert_eq!(config.theme, Theme::Nord);
         assert_eq!(config.mode, Mode::Bars);
     }
 
