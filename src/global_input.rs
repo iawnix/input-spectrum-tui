@@ -13,6 +13,8 @@ use std::time::Duration;
 use evdev::{Device, EventType};
 use x11::{xlib, xrecord};
 
+static X11_ERROR_TRAPPED: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalKeyEvent {
     pub code: u16,
@@ -76,6 +78,8 @@ fn start_x11_record_backend(
             return None;
         }
 
+        let error_trap = X11ErrorTrap::install();
+
         let extension_name = CString::new("RECORD").expect("static string has no nul byte");
         if xlib::XInitExtension(dpy_control, extension_name.as_ptr()).is_null() {
             close_display(dpy_control);
@@ -110,7 +114,15 @@ fn start_x11_record_backend(
             &mut range_for_context,
             1,
         );
+        xlib::XSync(dpy_control, 0);
         if context == 0 {
+            xlib::XFree(range_ptr.cast());
+            close_display(dpy_control);
+            close_display(dpy_data);
+            return None;
+        }
+        if error_trap.caught_error() {
+            xrecord::XRecordFreeContext(dpy_control, context);
             xlib::XFree(range_ptr.cast());
             close_display(dpy_control);
             close_display(dpy_data);
@@ -119,19 +131,24 @@ fn start_x11_record_backend(
 
         let mut callback_state = Box::new(X11CallbackState { sender });
         let callback_state_ptr = (&mut *callback_state as *mut X11CallbackState).cast::<c_char>();
-        if xrecord::XRecordEnableContextAsync(
+        let enable_result = xrecord::XRecordEnableContextAsync(
             dpy_data,
             context,
             Some(x11_record_callback),
             callback_state_ptr,
-        ) == 0
-        {
+        );
+        xlib::XSync(dpy_data, 0);
+        xlib::XSync(dpy_control, 0);
+        if enable_result == 0 || error_trap.caught_error() {
+            xrecord::XRecordDisableContext(dpy_control, context);
             xrecord::XRecordFreeContext(dpy_control, context);
             xlib::XFree(range_ptr.cast());
             close_display(dpy_control);
             close_display(dpy_data);
             return None;
         }
+
+        drop(error_trap);
 
         let backend = X11RecordBackend {
             dpy_control,
@@ -142,6 +159,38 @@ fn start_x11_record_backend(
         };
         Some(thread::spawn(move || x11_record_loop(backend, stop)))
     }
+}
+
+struct X11ErrorTrap {
+    previous: Option<unsafe extern "C" fn(*mut xlib::Display, *mut xlib::XErrorEvent) -> c_int>,
+}
+
+impl X11ErrorTrap {
+    unsafe fn install() -> Self {
+        X11_ERROR_TRAPPED.store(false, Ordering::SeqCst);
+        let previous = xlib::XSetErrorHandler(Some(x11_error_handler));
+        Self { previous }
+    }
+
+    fn caught_error(&self) -> bool {
+        X11_ERROR_TRAPPED.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for X11ErrorTrap {
+    fn drop(&mut self) {
+        unsafe {
+            xlib::XSetErrorHandler(self.previous);
+        }
+    }
+}
+
+unsafe extern "C" fn x11_error_handler(
+    _display: *mut xlib::Display,
+    _event: *mut xlib::XErrorEvent,
+) -> c_int {
+    X11_ERROR_TRAPPED.store(true, Ordering::SeqCst);
+    0
 }
 
 struct X11RecordBackend {
