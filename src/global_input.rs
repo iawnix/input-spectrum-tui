@@ -23,7 +23,7 @@ pub struct GlobalKeyEvent {
 #[derive(Debug)]
 pub struct GlobalInput {
     receiver: Receiver<GlobalKeyEvent>,
-    stops: Vec<Arc<AtomicBool>>,
+    stops: Vec<BackendStop>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -83,7 +83,7 @@ impl GlobalInput {
 impl Drop for GlobalInput {
     fn drop(&mut self) {
         for stop in &self.stops {
-            stop.store(true, Ordering::Relaxed);
+            stop.request_stop();
         }
         for thread in self.threads.drain(..) {
             let _ = thread.join();
@@ -154,15 +154,97 @@ impl DebugLogInner {
     }
 }
 
+#[derive(Debug, Clone)]
+enum BackendStop {
+    Flag(Arc<AtomicBool>),
+    X11(X11StopHandle),
+}
+
+impl BackendStop {
+    fn request_stop(&self) {
+        match self {
+            Self::Flag(stop) => stop.store(true, Ordering::Relaxed),
+            Self::X11(stop) => stop.request_stop(),
+        }
+    }
+}
+
 struct InputBackend {
-    stop: Arc<AtomicBool>,
+    stop: BackendStop,
     thread: JoinHandle<()>,
 }
 
 struct EvdevBackend {
-    stop: Arc<AtomicBool>,
+    stop: BackendStop,
     threads: Vec<JoinHandle<()>>,
 }
+
+#[derive(Debug, Clone)]
+struct X11StopHandle {
+    stop: Arc<AtomicBool>,
+    disabled: Arc<AtomicBool>,
+    control: Arc<Mutex<Option<X11Control>>>,
+}
+
+impl X11StopHandle {
+    fn new() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            disabled: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn is_requested(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    fn request_stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.disable_context();
+    }
+
+    fn set_control(&self, dpy_control: *mut xlib::Display, context: xrecord::XRecordContext) {
+        if let Ok(mut control) = self.control.lock() {
+            *control = Some(X11Control {
+                dpy_control,
+                context,
+            });
+        }
+    }
+
+    fn clear_control(&self) {
+        if let Ok(mut control) = self.control.lock() {
+            *control = None;
+        }
+    }
+
+    fn disable_context(&self) {
+        let Ok(control) = self.control.lock() else {
+            return;
+        };
+        let Some(control) = *control else {
+            return;
+        };
+
+        if self.disabled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        unsafe {
+            xrecord::XRecordDisableContext(control.dpy_control, control.context);
+            xlib::XFlush(control.dpy_control);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct X11Control {
+    dpy_control: *mut xlib::Display,
+    context: xrecord::XRecordContext,
+}
+
+unsafe impl Send for X11Control {}
 
 fn start_x11_record_backend(
     sender: Sender<GlobalKeyEvent>,
@@ -174,33 +256,37 @@ fn start_x11_record_backend(
         return None;
     }
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = Arc::clone(&stop);
+    let stop = X11StopHandle::new();
+    let thread_stop = stop.clone();
     let thread_debug = Arc::clone(&debug);
     let (ready_sender, ready_receiver) = mpsc::channel();
     let thread = thread::spawn(move || unsafe {
-        let result = start_x11_record_thread(sender, Arc::clone(&thread_stop), Arc::clone(&thread_debug));
+        let result =
+            start_x11_record_thread(sender, thread_stop.clone(), Arc::clone(&thread_debug));
         let ready = result.is_some();
         let _ = ready_sender.send(ready);
         if let Some(backend) = result {
-            x11_record_loop(backend, thread_stop);
+            x11_record_loop(backend);
         }
     });
 
     match ready_receiver.recv_timeout(timeout) {
         Ok(true) => {
             debug.log("x11 backend ready");
-            Some(InputBackend { stop, thread })
+            Some(InputBackend {
+                stop: BackendStop::X11(stop),
+                thread,
+            })
         }
         Ok(false) => {
             debug.log("x11 backend failed; falling back if auto");
-            stop.store(true, Ordering::Relaxed);
+            stop.request_stop();
             let _ = thread.join();
             None
         }
         Err(_) => {
             debug.log(format!("x11 backend timed out after {} ms", timeout.as_millis()));
-            stop.store(true, Ordering::Relaxed);
+            stop.request_stop();
             None
         }
     }
@@ -208,10 +294,10 @@ fn start_x11_record_backend(
 
 unsafe fn start_x11_record_thread(
     sender: Sender<GlobalKeyEvent>,
-    stop: Arc<AtomicBool>,
+    stop: X11StopHandle,
     debug: DebugLog,
 ) -> Option<X11RecordBackend> {
-    if stop.load(Ordering::Relaxed) {
+    if stop.is_requested() {
         debug.log("x11 init cancelled before start");
         return None;
     }
@@ -319,6 +405,7 @@ unsafe fn start_x11_record_thread(
         }
 
         drop(error_trap);
+        stop.set_control(dpy_control, context);
 
         debug.log("x11 init: ready");
         Some(X11RecordBackend {
@@ -327,6 +414,7 @@ unsafe fn start_x11_record_thread(
             range_ptr,
             context,
             callback_state,
+            stop,
             debug,
         })
     }
@@ -370,21 +458,23 @@ struct X11RecordBackend {
     range_ptr: *mut xrecord::XRecordRange,
     context: xrecord::XRecordContext,
     callback_state: Box<X11CallbackState>,
+    stop: X11StopHandle,
     debug: DebugLog,
 }
 
 unsafe impl Send for X11RecordBackend {}
 
-fn x11_record_loop(backend: X11RecordBackend, stop: Arc<AtomicBool>) {
+fn x11_record_loop(backend: X11RecordBackend) {
     unsafe {
         backend.debug.log("x11 loop: started");
-        while !stop.load(Ordering::Relaxed) {
+        while !backend.stop.is_requested() {
             xrecord::XRecordProcessReplies(backend.dpy_data);
             thread::sleep(Duration::from_millis(2));
         }
 
         backend.debug.log("x11 loop: stopping");
-        xrecord::XRecordDisableContext(backend.dpy_control, backend.context);
+        backend.stop.disable_context();
+        backend.stop.clear_control();
         xrecord::XRecordFreeContext(backend.dpy_control, backend.context);
         xlib::XFree(backend.range_ptr.cast());
         close_display(backend.dpy_control);
@@ -446,7 +536,10 @@ fn start_evdev_keyboard_backend(
         }));
     }
     debug.log(format!("evdev init: {} listener threads", threads.len()));
-    EvdevBackend { stop, threads }
+    EvdevBackend {
+        stop: BackendStop::Flag(stop),
+        threads,
+    }
 }
 
 fn input_event_paths() -> io::Result<Vec<PathBuf>> {
