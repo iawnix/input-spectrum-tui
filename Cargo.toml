@@ -6,4 +6,5 @@ description = "Input-driven terminal spectrum wall for keyboard and mouse events
 
 [dependencies]
 crossterm = "0.29"
+evdev = "0.13"
 ratatui = "0.29"

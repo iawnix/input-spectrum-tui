@@ -1,8 +1,8 @@
 # Input Spectrum TUI
 
-`inputspectrum` turns keyboard and mouse input inside the focused terminal into a live spectrum wall. Each key press, mouse click, drag, movement, and wheel event injects energy into different bands; faster input produces taller and faster pulses.
+`inputspectrum` turns keyboard and mouse input into a live spectrum wall. Each key press, mouse click, drag, movement, and wheel event injects energy into different bands; faster input produces taller and faster pulses.
 
-Only the focused TUI terminal is monitored. The app enables terminal focus-change events and ignores keyboard/mouse events after focus is lost.
+On Linux it reads global input from `/dev/input/event*`, so keyboard and mouse activity can animate the wall even when the TUI terminal is not focused. Access usually requires running as a user in the `input` group or using `sudo`.
 
 ## Run
 
@@ -23,4 +23,4 @@ cargo run -- --fps 60 --bars 96 --theme cyber
 
 ## Scope
 
-This v1 captures input only while the TUI terminal is focused. It does not use global OS-level keyboard or mouse hooks.
+The visual surface is intentionally clean: no title, status bar, or on-screen control hints. Terminal-local controls still work when the TUI is focused so the process can be closed safely.

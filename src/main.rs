@@ -1,4 +1,5 @@
 mod app;
+mod global_input;
 mod ui;
 
 use std::env;
@@ -7,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use app::{AppCommand, AppConfig, AppState, Mode, Theme};
 use crossterm::event::{
-    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -16,6 +17,8 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+
+use crate::global_input::GlobalInput;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -44,28 +47,31 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
     let fps = config.fps.clamp(10, 120);
     let tick_rate = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut app = AppState::new(config);
+    let global_input = GlobalInput::start();
     let mut last_tick = Instant::now();
 
     loop {
-        terminal.draw(|frame| ui::draw(frame, &app, fps))?;
+        for input_event in global_input.drain() {
+            app.handle_global_input(input_event);
+        }
+
+        terminal.draw(|frame| ui::draw(frame, &app))?;
 
         let elapsed = last_tick.elapsed();
         let timeout = tick_rate.saturating_sub(elapsed);
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) if app.focused => {
+                Event::Key(key) => {
                     if matches!(app.handle_key(key), AppCommand::Quit) {
                         break;
                     }
                 }
-                Event::Mouse(mouse) if app.focused => {
+                Event::Mouse(mouse) => {
                     let width = terminal.size()?.width;
                     app.handle_mouse(mouse, width);
                 }
                 Event::Resize(_, _) => {}
-                Event::FocusGained => app.set_focused(true),
-                Event::FocusLost => app.set_focused(false),
-                Event::Key(_) | Event::Mouse(_) | Event::Paste(_) => {}
+                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
         }
 
@@ -87,7 +93,6 @@ fn setup_terminal() -> io::Result<Tui> {
         out,
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableFocusChange,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     Terminal::new(CrosstermBackend::new(out))
@@ -101,7 +106,6 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             stdout(),
             PopKeyboardEnhancementFlags,
-            DisableFocusChange,
             DisableMouseCapture,
             LeaveAlternateScreen
         );

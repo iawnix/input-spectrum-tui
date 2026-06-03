@@ -5,6 +5,8 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use crate::global_input::GlobalInputEvent;
+
 const EVENT_WINDOW: Duration = Duration::from_secs(1);
 const MAX_EVENTS: usize = 512;
 const PEAK_DECAY: f32 = 0.86;
@@ -29,14 +31,6 @@ impl Mode {
             Self::Peaks => Self::Bars,
         }
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Bars => "bars",
-            Self::Wave => "wave",
-            Self::Peaks => "peaks",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,16 +38,6 @@ pub enum Theme {
     Cyber,
     Mono,
     Amber,
-}
-
-impl Theme {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Cyber => "cyber",
-            Self::Mono => "mono",
-            Self::Amber => "amber",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +97,6 @@ pub struct AppState {
     pub bands: Vec<Band>,
     pub mode: Mode,
     pub theme: Theme,
-    pub focused: bool,
     pub paused: bool,
     pub sensitivity: f32,
     pub event_count: u64,
@@ -134,7 +117,6 @@ impl AppState {
             bands: vec![Band::default(); bars],
             mode: config.mode,
             theme: config.theme,
-            focused: true,
             paused: false,
             sensitivity: 1.0,
             event_count: 0,
@@ -168,19 +150,6 @@ impl AppState {
             if band.peak < 0.02 {
                 band.peak = 0.0;
             }
-        }
-    }
-
-    pub fn input_rate(&self) -> usize {
-        self.events.len()
-    }
-
-    pub fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
-        if !focused {
-            self.mouse_position = None;
-            self.selected_band = None;
-            self.last_mouse_position = None;
         }
     }
 
@@ -243,6 +212,34 @@ impl AppState {
             }
         }
         AppCommand::None
+    }
+
+    pub fn handle_global_input(&mut self, event: GlobalInputEvent) {
+        match event {
+            GlobalInputEvent::Key { code } => {
+                let band = code_to_band(code, self.bands.len());
+                self.inject_at(band, EventKind::Key, KEY_EVENT_SCALE);
+                self.key_count += 1;
+                self.last_key_label = format!("key:{code}");
+            }
+            GlobalInputEvent::Button { code } => {
+                let band = code_to_band(code, self.bands.len());
+                self.selected_band = Some(band);
+                self.inject_at(band, EventKind::Click, CLICK_EVENT_SCALE);
+                self.mouse_count += 1;
+            }
+            GlobalInputEvent::Move { code, value } => {
+                let band = motion_to_band(code, value, self.bands.len());
+                let amount = MOVE_EVENT_SCALE + (value.unsigned_abs().min(40) as f32 / 40.0) * 0.85;
+                self.inject_at(band, EventKind::Move, amount);
+            }
+            GlobalInputEvent::Wheel { code, value } => {
+                let band = code_to_band(code, self.bands.len());
+                let direction = if value < 0 { -1 } else { 1 };
+                self.inject_sweep(band, direction, WHEEL_EVENT_SCALE);
+                self.mouse_count += 1;
+            }
+        }
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, width: u16) {
@@ -429,6 +426,21 @@ pub fn key_to_band(code: KeyCode, band_count: usize) -> usize {
     stable_hash(value) % band_count
 }
 
+pub fn code_to_band(code: u16, band_count: usize) -> usize {
+    if band_count == 0 {
+        return 0;
+    }
+    stable_hash(code as usize) % band_count
+}
+
+pub fn motion_to_band(code: u16, value: i32, band_count: usize) -> usize {
+    if band_count == 0 {
+        return 0;
+    }
+    let signed = value.unsigned_abs() as usize;
+    stable_hash(code as usize ^ signed.rotate_left(3)) % band_count
+}
+
 fn stable_hash(value: usize) -> usize {
     value
         .wrapping_mul(2_654_435_761usize)
@@ -494,6 +506,16 @@ mod tests {
     }
 
     #[test]
+    fn global_code_mapping_stays_in_range() {
+        for band_count in [1, 2, 8, 80, 240] {
+            for code in [0, 1, 30, 272, u16::MAX] {
+                assert!(code_to_band(code, band_count) < band_count);
+                assert!(motion_to_band(code, -40, band_count) < band_count);
+            }
+        }
+    }
+
+    #[test]
     fn sanitize_rejects_invalid_values() {
         assert_eq!(sanitize_level(f32::NAN), 0.0);
         assert_eq!(sanitize_level(f32::INFINITY), 0.0);
@@ -522,6 +544,6 @@ mod tests {
         app.record_event(now - Duration::from_millis(1_500));
         app.record_event(now);
         app.prune_events(now);
-        assert_eq!(app.input_rate(), 1);
+        assert_eq!(app.events.len(), 1);
     }
 }

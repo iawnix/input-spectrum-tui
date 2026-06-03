@@ -1,48 +1,13 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{AppState, EventKind, Mode, Theme};
 
-pub fn draw(frame: &mut Frame<'_>, app: &AppState, fps: u16) {
-    let area = frame.area();
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(8)])
-        .split(area);
-
-    draw_header(frame, rows[0], app, fps);
-    draw_spectrum(frame, rows[1], app);
-}
-
-fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState, fps: u16) {
-    let status = if !app.focused {
-        "unfocused"
-    } else if app.paused {
-        "paused"
-    } else {
-        "live"
-    };
-
-    let line = Line::from(vec![
-        Span::styled(
-            " inputspectrum ",
-            Style::default()
-                .fg(theme_accent(app.theme))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(
-            " {status} | {} | {} | {}/s | {:.1}x | {fps}fps",
-            app.mode.as_str(),
-            app.theme.as_str(),
-            app.input_rate(),
-            app.sensitivity
-        )),
-    ]);
-
-    frame.render_widget(Paragraph::new(line), area);
+pub fn draw(frame: &mut Frame<'_>, app: &AppState) {
+    draw_spectrum(frame, frame.area(), app);
 }
 
 fn draw_spectrum(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
