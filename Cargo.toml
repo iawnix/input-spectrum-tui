@@ -1,0 +1,9 @@
+[package]
+name = "inputspectrum"
+version = "0.1.0"
+edition = "2021"
+description = "Input-driven terminal spectrum wall for keyboard and mouse events."
+
+[dependencies]
+crossterm = "0.29"
+ratatui = "0.29"

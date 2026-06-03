@@ -1,0 +1,7 @@
+/target/
+
+# Local/editor noise
+.DS_Store
+*.swp
+*.swo
+*~
