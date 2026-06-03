@@ -1,14 +1,14 @@
 use std::ffi::CString;
-use std::fs;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use evdev::{Device, EventType};
 use x11::{xlib, xrecord};
@@ -23,25 +23,54 @@ pub struct GlobalKeyEvent {
 #[derive(Debug)]
 pub struct GlobalInput {
     receiver: Receiver<GlobalKeyEvent>,
-    stop: Arc<AtomicBool>,
+    stops: Vec<Arc<AtomicBool>>,
     threads: Vec<JoinHandle<()>>,
 }
 
 impl GlobalInput {
     pub fn start() -> Self {
         let (sender, receiver) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
+        let mut stops = Vec::new();
+        let debug = DebugLogInner::from_env();
+        let backend = BackendPreference::from_env();
 
-        if let Some(thread) = start_x11_record_backend(sender.clone(), Arc::clone(&stop)) {
-            threads.push(thread);
-        } else {
-            threads.extend(start_evdev_keyboard_backend(sender, Arc::clone(&stop)));
+        debug.log(format!("global input start backend={}", backend.name()));
+
+        match backend {
+            BackendPreference::Auto => {
+                if let Some(backend) = start_x11_record_backend(
+                    sender.clone(),
+                    Arc::clone(&debug),
+                    Duration::from_millis(700),
+                ) {
+                    stops.push(backend.stop);
+                    threads.push(backend.thread);
+                } else {
+                    let evdev = start_evdev_keyboard_backend(sender, Arc::clone(&debug));
+                    stops.push(evdev.stop);
+                    threads.extend(evdev.threads);
+                }
+            }
+            BackendPreference::X11 => {
+                if let Some(backend) =
+                    start_x11_record_backend(sender, Arc::clone(&debug), Duration::from_secs(2))
+                {
+                    stops.push(backend.stop);
+                    threads.push(backend.thread);
+                }
+            }
+            BackendPreference::Evdev => {
+                let evdev = start_evdev_keyboard_backend(sender, Arc::clone(&debug));
+                stops.push(evdev.stop);
+                threads.extend(evdev.threads);
+            }
+            BackendPreference::None => {}
         }
 
         Self {
             receiver,
-            stop,
+            stops,
             threads,
         }
     }
@@ -53,52 +82,182 @@ impl GlobalInput {
 
 impl Drop for GlobalInput {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        for stop in &self.stops {
+            stop.store(true, Ordering::Relaxed);
+        }
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendPreference {
+    Auto,
+    X11,
+    Evdev,
+    None,
+}
+
+impl BackendPreference {
+    fn from_env() -> Self {
+        match std::env::var("INPUTSPECTRUM_BACKEND") {
+            Ok(value) if value.eq_ignore_ascii_case("x11") => Self::X11,
+            Ok(value) if value.eq_ignore_ascii_case("evdev") => Self::Evdev,
+            Ok(value) if value.eq_ignore_ascii_case("none") => Self::None,
+            _ => Self::Auto,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::X11 => "x11",
+            Self::Evdev => "evdev",
+            Self::None => "none",
+        }
+    }
+}
+
+type DebugLog = Arc<DebugLogInner>;
+
+#[derive(Debug)]
+struct DebugLogInner {
+    file: Option<Mutex<File>>,
+}
+
+impl DebugLogInner {
+    fn from_env() -> DebugLog {
+        let file = std::env::var_os("INPUTSPECTRUM_DEBUG_LOG").and_then(|path| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+                .map(Mutex::new)
+        });
+        Arc::new(Self { file })
+    }
+
+    fn log(&self, message: impl AsRef<str>) {
+        let Some(file) = &self.file else {
+            return;
+        };
+        let Ok(mut file) = file.lock() else {
+            return;
+        };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
+        let _ = writeln!(file, "[{timestamp}] {}", message.as_ref());
+    }
+}
+
+struct InputBackend {
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+struct EvdevBackend {
+    stop: Arc<AtomicBool>,
+    threads: Vec<JoinHandle<()>>,
+}
+
 fn start_x11_record_backend(
     sender: Sender<GlobalKeyEvent>,
-    stop: Arc<AtomicBool>,
-) -> Option<JoinHandle<()>> {
+    debug: DebugLog,
+    timeout: Duration,
+) -> Option<InputBackend> {
     if std::env::var_os("DISPLAY").is_none() {
+        debug.log("x11 skipped: DISPLAY is not set");
+        return None;
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread_debug = Arc::clone(&debug);
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let thread = thread::spawn(move || unsafe {
+        let result = start_x11_record_thread(sender, Arc::clone(&thread_stop), Arc::clone(&thread_debug));
+        let ready = result.is_some();
+        let _ = ready_sender.send(ready);
+        if let Some(backend) = result {
+            x11_record_loop(backend, thread_stop);
+        }
+    });
+
+    match ready_receiver.recv_timeout(timeout) {
+        Ok(true) => {
+            debug.log("x11 backend ready");
+            Some(InputBackend { stop, thread })
+        }
+        Ok(false) => {
+            debug.log("x11 backend failed; falling back if auto");
+            stop.store(true, Ordering::Relaxed);
+            let _ = thread.join();
+            None
+        }
+        Err(_) => {
+            debug.log(format!("x11 backend timed out after {} ms", timeout.as_millis()));
+            stop.store(true, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+unsafe fn start_x11_record_thread(
+    sender: Sender<GlobalKeyEvent>,
+    stop: Arc<AtomicBool>,
+    debug: DebugLog,
+) -> Option<X11RecordBackend> {
+    if stop.load(Ordering::Relaxed) {
+        debug.log("x11 init cancelled before start");
         return None;
     }
 
     unsafe {
+        debug.log("x11 init: XInitThreads");
         let _ = xlib::XInitThreads();
+        debug.log("x11 init: opening displays");
         let dpy_control = xlib::XOpenDisplay(null());
         let dpy_data = xlib::XOpenDisplay(null());
         if dpy_control.is_null() || dpy_data.is_null() {
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log("x11 init failed: cannot open display");
             return None;
         }
 
+        debug.log("x11 init: installing x error trap");
         let error_trap = X11ErrorTrap::install();
 
         let extension_name = CString::new("RECORD").expect("static string has no nul byte");
+        debug.log("x11 init: XInitExtension(RECORD)");
         if xlib::XInitExtension(dpy_control, extension_name.as_ptr()).is_null() {
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log("x11 init failed: RECORD extension missing");
             return None;
         }
 
         let mut major: c_int = 0;
         let mut minor: c_int = 0;
+        debug.log("x11 init: XRecordQueryVersion");
         if xrecord::XRecordQueryVersion(dpy_control, &mut major, &mut minor) == 0 {
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log("x11 init failed: XRecordQueryVersion failed");
             return None;
         }
+        debug.log(format!("x11 init: RECORD version {major}.{minor}"));
 
+        debug.log("x11 init: XRecordAllocRange");
         let range_ptr = xrecord::XRecordAllocRange();
         if range_ptr.is_null() {
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log("x11 init failed: XRecordAllocRange failed");
             return None;
         }
         (*range_ptr).device_events.first = xlib::KeyPress as u8;
@@ -106,6 +265,7 @@ fn start_x11_record_backend(
 
         let mut clients = xrecord::XRecordAllClients;
         let mut range_for_context = range_ptr;
+        debug.log("x11 init: XRecordCreateContext");
         let context = xrecord::XRecordCreateContext(
             dpy_control,
             0,
@@ -114,11 +274,13 @@ fn start_x11_record_backend(
             &mut range_for_context,
             1,
         );
+        debug.log("x11 init: XSync(control) after create context");
         xlib::XSync(dpy_control, 0);
         if context == 0 {
             xlib::XFree(range_ptr.cast());
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log("x11 init failed: XRecordCreateContext returned 0");
             return None;
         }
         if error_trap.caught_error() {
@@ -126,18 +288,22 @@ fn start_x11_record_backend(
             xlib::XFree(range_ptr.cast());
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log("x11 init failed: X error during create context");
             return None;
         }
 
         let mut callback_state = Box::new(X11CallbackState { sender });
         let callback_state_ptr = (&mut *callback_state as *mut X11CallbackState).cast::<c_char>();
+        debug.log("x11 init: XRecordEnableContextAsync");
         let enable_result = xrecord::XRecordEnableContextAsync(
             dpy_data,
             context,
             Some(x11_record_callback),
             callback_state_ptr,
         );
+        debug.log("x11 init: XSync(data) after enable context");
         xlib::XSync(dpy_data, 0);
+        debug.log("x11 init: XSync(control) after enable context");
         xlib::XSync(dpy_control, 0);
         if enable_result == 0 || error_trap.caught_error() {
             xrecord::XRecordDisableContext(dpy_control, context);
@@ -145,19 +311,24 @@ fn start_x11_record_backend(
             xlib::XFree(range_ptr.cast());
             close_display(dpy_control);
             close_display(dpy_data);
+            debug.log(format!(
+                "x11 init failed: enable_result={enable_result}, trapped_error={}",
+                error_trap.caught_error()
+            ));
             return None;
         }
 
         drop(error_trap);
 
-        let backend = X11RecordBackend {
+        debug.log("x11 init: ready");
+        Some(X11RecordBackend {
             dpy_control,
             dpy_data,
             range_ptr,
             context,
             callback_state,
-        };
-        Some(thread::spawn(move || x11_record_loop(backend, stop)))
+            debug,
+        })
     }
 }
 
@@ -199,17 +370,20 @@ struct X11RecordBackend {
     range_ptr: *mut xrecord::XRecordRange,
     context: xrecord::XRecordContext,
     callback_state: Box<X11CallbackState>,
+    debug: DebugLog,
 }
 
 unsafe impl Send for X11RecordBackend {}
 
 fn x11_record_loop(backend: X11RecordBackend, stop: Arc<AtomicBool>) {
     unsafe {
+        backend.debug.log("x11 loop: started");
         while !stop.load(Ordering::Relaxed) {
             xrecord::XRecordProcessReplies(backend.dpy_data);
             thread::sleep(Duration::from_millis(2));
         }
 
+        backend.debug.log("x11 loop: stopping");
         xrecord::XRecordDisableContext(backend.dpy_control, backend.context);
         xrecord::XRecordFreeContext(backend.dpy_control, backend.context);
         xlib::XFree(backend.range_ptr.cast());
@@ -221,19 +395,26 @@ fn x11_record_loop(backend: X11RecordBackend, stop: Arc<AtomicBool>) {
 
 fn start_evdev_keyboard_backend(
     sender: Sender<GlobalKeyEvent>,
-    stop: Arc<AtomicBool>,
-) -> Vec<JoinHandle<()>> {
+    debug: DebugLog,
+) -> EvdevBackend {
+    let stop = Arc::new(AtomicBool::new(false));
     let mut threads = Vec::new();
-    for path in input_event_paths().unwrap_or_default() {
+    let paths = input_event_paths().unwrap_or_default();
+    debug.log(format!("evdev init: {} candidate devices", paths.len()));
+    for path in paths {
         let Ok(mut device) = Device::open(&path) else {
+            debug.log(format!("evdev skip: cannot open {}", path.display()));
             continue;
         };
         if device.set_nonblocking(true).is_err() {
+            debug.log(format!("evdev skip: cannot set nonblocking {}", path.display()));
             continue;
         }
 
         let sender = sender.clone();
         let stop = Arc::clone(&stop);
+        let debug = Arc::clone(&debug);
+        debug.log(format!("evdev init: listening {}", path.display()));
         threads.push(thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 match device.fetch_events() {
@@ -256,12 +437,16 @@ fn start_evdev_keyboard_backend(
                     {
                         thread::sleep(Duration::from_millis(2));
                     }
-                    Err(_) => return,
+                    Err(error) => {
+                        debug.log(format!("evdev thread stopped: {error}"));
+                        return;
+                    }
                 }
             }
         }));
     }
-    threads
+    debug.log(format!("evdev init: {} listener threads", threads.len()));
+    EvdevBackend { stop, threads }
 }
 
 fn input_event_paths() -> io::Result<Vec<PathBuf>> {

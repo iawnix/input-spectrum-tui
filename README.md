@@ -10,6 +10,16 @@ The global keyboard listener follows the same broad route as Screenkey: it first
 cargo run -- --fps 60 --bars 96 --theme cyber
 ```
 
+Debug a startup hang:
+
+```bash
+INPUTSPECTRUM_DEBUG_LOG=/tmp/inputspectrum.log cargo run -- --fps 60
+INPUTSPECTRUM_BACKEND=evdev cargo run -- --fps 60
+INPUTSPECTRUM_BACKEND=none cargo run -- --fps 60
+```
+
+`INPUTSPECTRUM_BACKEND` accepts `auto`, `x11`, `evdev`, or `none`.
+
 ## Controls
 
 - `q` / `Esc`: quit
@@ -17,6 +27,7 @@ cargo run -- --fps 60 --bars 96 --theme cyber
 - `tab`: switch mode (`bars`, `wave`, `peaks`)
 - `1`, `2`, `3`: switch theme (`cyber`, `mono`, `amber`)
 - `+` / `-`: adjust sensitivity
+
 ## Scope
 
 The visual surface is intentionally clean: no title, status bar, or on-screen control hints. Mouse events are ignored. Terminal-local controls still work when the TUI is focused so the process can be closed safely.
