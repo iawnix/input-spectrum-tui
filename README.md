@@ -2,6 +2,8 @@
 
 `inputspectrum` turns keyboard and mouse input inside the focused terminal into a live spectrum wall. Each key press, mouse click, drag, movement, and wheel event injects energy into different bands; faster input produces taller and faster pulses.
 
+Only the focused TUI terminal is monitored. The app enables terminal focus-change events and ignores keyboard/mouse events after focus is lost.
+
 ## Run
 
 ```bash

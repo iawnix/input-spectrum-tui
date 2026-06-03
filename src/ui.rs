@@ -10,64 +10,38 @@ pub fn draw(frame: &mut Frame<'_>, app: &AppState, fps: u16) {
     let area = frame.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(8),
-            Constraint::Length(2),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(8)])
         .split(area);
 
     draw_header(frame, rows[0], app, fps);
     draw_spectrum(frame, rows[1], app);
-    draw_footer(frame, rows[2], app);
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &AppState, fps: u16) {
-    let status = if app.paused { "paused" } else { "live" };
-    let last_event = app.last_event.map(EventKind::as_str).unwrap_or("-");
-    let mouse = app
-        .mouse_position
-        .map(|(x, y)| format!("{x},{y}"))
-        .unwrap_or_else(|| String::from("-"));
-    let selected = app
-        .selected_band
-        .map(|band| band.to_string())
-        .unwrap_or_else(|| String::from("-"));
+    let status = if !app.focused {
+        "unfocused"
+    } else if app.paused {
+        "paused"
+    } else {
+        "live"
+    };
 
     let line = Line::from(vec![
-        Span::styled(" inputspectrum ", Style::default().fg(theme_accent(app.theme)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " inputspectrum ",
+            Style::default()
+                .fg(theme_accent(app.theme))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(format!(
-            " {status} | fps {fps} | bars {} | mode {} | theme {} | rate {}/s | sensitivity {:.1} ",
-            app.band_count(),
+            " {status} | {} | {} | {}/s | {:.1}x | {fps}fps",
             app.mode.as_str(),
             app.theme.as_str(),
             app.input_rate(),
             app.sensitivity
         )),
-        Span::styled(
-            format!(" last {last_event}:{} | mouse {mouse} | selected {selected}", app.last_key_label),
-            Style::default().fg(Color::DarkGray),
-        ),
     ]);
 
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let line = Line::from(vec![
-        Span::styled(" q/esc ", key_style(app.theme)),
-        Span::raw("quit  "),
-        Span::styled(" space ", key_style(app.theme)),
-        Span::raw("pause  "),
-        Span::styled(" tab ", key_style(app.theme)),
-        Span::raw("mode  "),
-        Span::styled(" 1/2/3 ", key_style(app.theme)),
-        Span::raw("theme  "),
-        Span::styled(" +/- ", key_style(app.theme)),
-        Span::raw("sensitivity  "),
-        Span::styled(" mouse ", key_style(app.theme)),
-        Span::raw("click/drag/wheel pulses"),
-    ]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -134,12 +108,6 @@ fn level_for_mode(mode: Mode, energy: f32, peak: f32, column: usize, width: usiz
 
 fn near_wave(level: f32, threshold: f32, height: usize) -> bool {
     (level - threshold).abs() <= (1.0 / height.max(1) as f32) * 0.65
-}
-
-fn key_style(theme: Theme) -> Style {
-    Style::default()
-        .fg(theme_accent(theme))
-        .add_modifier(Modifier::BOLD)
 }
 
 fn theme_accent(theme: Theme) -> Color {

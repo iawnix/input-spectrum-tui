@@ -66,19 +66,6 @@ pub enum EventKind {
     Wheel,
 }
 
-impl EventKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Key => "key",
-            Self::SpecialKey => "special",
-            Self::Click => "click",
-            Self::Drag => "drag",
-            Self::Move => "move",
-            Self::Wheel => "wheel",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Band {
     pub energy: f32,
@@ -126,6 +113,7 @@ pub struct AppState {
     pub bands: Vec<Band>,
     pub mode: Mode,
     pub theme: Theme,
+    pub focused: bool,
     pub paused: bool,
     pub sensitivity: f32,
     pub event_count: u64,
@@ -146,6 +134,7 @@ impl AppState {
             bands: vec![Band::default(); bars],
             mode: config.mode,
             theme: config.theme,
+            focused: true,
             paused: false,
             sensitivity: 1.0,
             event_count: 0,
@@ -186,8 +175,13 @@ impl AppState {
         self.events.len()
     }
 
-    pub fn band_count(&self) -> usize {
-        self.bands.len()
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused {
+            self.mouse_position = None;
+            self.selected_band = None;
+            self.last_mouse_position = None;
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> AppCommand {

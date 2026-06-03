@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use app::{AppCommand, AppConfig, AppState, Mode, Theme};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -53,17 +53,19 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
         let timeout = tick_rate.saturating_sub(elapsed);
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) => {
+                Event::Key(key) if app.focused => {
                     if matches!(app.handle_key(key), AppCommand::Quit) {
                         break;
                     }
                 }
-                Event::Mouse(mouse) => {
+                Event::Mouse(mouse) if app.focused => {
                     let width = terminal.size()?.width;
                     app.handle_mouse(mouse, width);
                 }
                 Event::Resize(_, _) => {}
-                Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
+                Event::FocusGained => app.set_focused(true),
+                Event::FocusLost => app.set_focused(false),
+                Event::Key(_) | Event::Mouse(_) | Event::Paste(_) => {}
             }
         }
 
@@ -85,6 +87,7 @@ fn setup_terminal() -> io::Result<Tui> {
         out,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableFocusChange,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     Terminal::new(CrosstermBackend::new(out))
@@ -98,6 +101,7 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             stdout(),
             PopKeyboardEnhancementFlags,
+            DisableFocusChange,
             DisableMouseCapture,
             LeaveAlternateScreen
         );
