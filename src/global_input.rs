@@ -33,7 +33,7 @@ impl GlobalInput {
         let mut threads = Vec::new();
         let mut stops = Vec::new();
         let debug = DebugLogInner::from_env();
-        let backend = BackendPreference::from_env();
+        let backend = BackendPreference::from_env(&debug);
 
         debug.log(format!("global input start backend={}", backend.name()));
 
@@ -100,12 +100,28 @@ enum BackendPreference {
 }
 
 impl BackendPreference {
-    fn from_env() -> Self {
+    fn from_env(debug: &DebugLog) -> Self {
         match std::env::var("INPUTSPECTRUM_BACKEND") {
-            Ok(value) if value.eq_ignore_ascii_case("x11") => Self::X11,
-            Ok(value) if value.eq_ignore_ascii_case("evdev") => Self::Evdev,
-            Ok(value) if value.eq_ignore_ascii_case("none") => Self::None,
-            _ => Self::Auto,
+            Ok(value) => match Self::parse(&value) {
+                Some(backend) => backend,
+                None => {
+                    debug.log(format!(
+                        "invalid INPUTSPECTRUM_BACKEND={value:?}; using auto"
+                    ));
+                    Self::Auto
+                }
+            },
+            Err(_) => Self::Auto,
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            value if value.eq_ignore_ascii_case("auto") => Some(Self::Auto),
+            value if value.eq_ignore_ascii_case("x11") => Some(Self::X11),
+            value if value.eq_ignore_ascii_case("evdev") => Some(Self::Evdev),
+            value if value.eq_ignore_ascii_case("none") => Some(Self::None),
+            _ => None,
         }
     }
 
@@ -643,5 +659,22 @@ mod tests {
         assert_eq!(map_evdev_key(EventType::KEY, 0x130, 1), None);
         assert_eq!(map_evdev_key(EventType::KEY, 0x2c0, 1), None);
         assert_eq!(map_evdev_key(EventType::RELATIVE, 0, 4), None);
+    }
+
+    #[test]
+    fn parses_documented_backend_preferences() {
+        assert_eq!(BackendPreference::parse("auto"), Some(BackendPreference::Auto));
+        assert_eq!(BackendPreference::parse("x11"), Some(BackendPreference::X11));
+        assert_eq!(
+            BackendPreference::parse("evdev"),
+            Some(BackendPreference::Evdev)
+        );
+        assert_eq!(BackendPreference::parse("none"), Some(BackendPreference::None));
+    }
+
+    #[test]
+    fn rejects_unknown_backend_preferences() {
+        assert_eq!(BackendPreference::parse("cyber"), None);
+        assert_eq!(BackendPreference::parse("wayland"), None);
     }
 }

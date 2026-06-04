@@ -181,7 +181,7 @@ fn parse_range(value: &str, flag: &str, min: u16, max: u16) -> Result<u16, Strin
 
 fn parse_theme(value: &str) -> Result<Theme, String> {
     match value {
-        "nord" | "cyber" => Ok(Theme::Nord),
+        "nord" => Ok(Theme::Nord),
         "mono" => Ok(Theme::Mono),
         "amber" => Ok(Theme::Amber),
         _ => Err(String::from(
@@ -240,5 +240,20 @@ mod tests {
     fn rejects_out_of_range_values() {
         assert!(parse_args(["--fps=5".to_string()]).is_err());
         assert!(parse_args(["--bars=400".to_string()]).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_theme_aliases() {
+        assert!(parse_args(["--theme=cyber".to_string()]).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_mode_aliases() {
+        assert!(parse_args(["--mode=cyber".to_string()]).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_flags() {
+        assert!(parse_args(["--backend=evdev".to_string()]).is_err());
     }
 }

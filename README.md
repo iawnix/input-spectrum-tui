@@ -29,14 +29,14 @@ INPUTSPECTRUM_BACKEND=evdev cargo run --locked -- --fps 60
 INPUTSPECTRUM_BACKEND=none cargo run --locked -- --fps 60
 ```
 
-`INPUTSPECTRUM_BACKEND` accepts `auto`, `x11`, `evdev`, or `none`. Use `none` when you only want terminal-local controls and no global keyboard capture.
+`INPUTSPECTRUM_BACKEND` accepts `auto`, `x11`, `evdev`, or `none`. Unknown backend values fall back to `auto` and are recorded in `INPUTSPECTRUM_DEBUG_LOG` when debug logging is enabled. Use `none` when you only want terminal-local controls and no global keyboard capture.
 
 ## Options
 
 ```text
 --fps 10..120              render frame rate
 --bars 8..240              internal spectrum band count
---theme nord|mono|amber    color theme
+--theme nord|mono|amber    color theme; no legacy aliases
 --mode bars|wave|peaks     initial render mode
 ```
 
