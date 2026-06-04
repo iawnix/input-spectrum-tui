@@ -48,6 +48,14 @@ INPUTSPECTRUM_BACKEND=none cargo run --locked -- --fps 60
 - `1`, `2`, `3`: switch theme (`nord`, `mono`, `amber`)
 - `+` / `-`: adjust sensitivity
 
+Control keys only change settings; they do not inject spectrum energy.
+
+## Modes
+
+- `bars`: solid vertical spectrum bars with a short peak cap
+- `wave`: a continuous contour trace driven by the current energy field
+- `peaks`: sparse peak-hold markers with minimal floor traces
+
 ## Scope
 
 The visual surface is intentionally clean: no title, status bar, or on-screen control hints. Mouse events are ignored. Terminal-local controls still work when the TUI is focused so the process can be closed safely.

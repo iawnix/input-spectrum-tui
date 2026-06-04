@@ -78,9 +78,10 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AppCommand {
     None,
+    ControlHandled,
     Quit,
 }
 
@@ -147,38 +148,38 @@ impl AppState {
             }
             KeyCode::Char(' ') => {
                 self.paused = !self.paused;
-                self.inject_fixed(4, EventKind::SpecialKey, 1.4);
                 self.last_key_label = String::from("space");
+                return AppCommand::ControlHandled;
             }
             KeyCode::Tab => {
                 self.mode = self.mode.next();
-                self.inject_fixed(7, EventKind::SpecialKey, 1.4);
                 self.last_key_label = String::from("tab");
+                return AppCommand::ControlHandled;
             }
             KeyCode::Char('1') => {
                 self.theme = Theme::Nord;
-                self.inject_fixed(1, EventKind::SpecialKey, 1.2);
                 self.last_key_label = String::from("1");
+                return AppCommand::ControlHandled;
             }
             KeyCode::Char('2') => {
                 self.theme = Theme::Mono;
-                self.inject_fixed(2, EventKind::SpecialKey, 1.2);
                 self.last_key_label = String::from("2");
+                return AppCommand::ControlHandled;
             }
             KeyCode::Char('3') => {
                 self.theme = Theme::Amber;
-                self.inject_fixed(3, EventKind::SpecialKey, 1.2);
                 self.last_key_label = String::from("3");
+                return AppCommand::ControlHandled;
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 self.sensitivity = (self.sensitivity + 0.1).min(3.0);
-                self.inject_fixed(5, EventKind::SpecialKey, 1.0);
                 self.last_key_label = String::from("+");
+                return AppCommand::ControlHandled;
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
                 self.sensitivity = (self.sensitivity - 0.1).max(0.2);
-                self.inject_fixed(6, EventKind::SpecialKey, 1.0);
                 self.last_key_label = String::from("-");
+                return AppCommand::ControlHandled;
             }
             _ => {
                 let band = key_to_band(key.code, self.bands.len());
@@ -205,15 +206,6 @@ impl AppState {
         self.inject_wave_packet(band, EventKind::Key, KEY_EVENT_SCALE);
         self.key_count += 1;
         self.last_key_label = format!("key:{}", event.code);
-    }
-
-    fn inject_fixed(&mut self, seed: usize, kind: EventKind, amount: f32) {
-        let band = if self.bands.is_empty() {
-            0
-        } else {
-            dynamic_key_band(seed as u16, self.bands.len(), self.phase)
-        };
-        self.inject_wave_packet(band, kind, amount);
     }
 
     pub fn inject_at(&mut self, band_index: usize, kind: EventKind, amount: f32) {
@@ -420,5 +412,22 @@ mod tests {
         app.record_event(now);
         app.prune_events(now);
         assert_eq!(app.events.len(), 1);
+    }
+
+    #[test]
+    fn control_keys_change_settings_without_injecting_energy() {
+        let mut app = AppState::new(AppConfig::default());
+
+        assert_eq!(
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            AppCommand::ControlHandled
+        );
+        assert_eq!(app.mode, Mode::Wave);
+        assert_eq!(app.event_count, 0);
+        assert_eq!(app.key_count, 0);
+        assert!(app
+            .bands
+            .iter()
+            .all(|band| band.energy == 0.0 && band.peak == 0.0));
     }
 }

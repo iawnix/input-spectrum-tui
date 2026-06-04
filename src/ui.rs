@@ -49,26 +49,13 @@ fn draw_spectrum(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let mut lines = Vec::with_capacity(height);
 
     for row in 0..height {
-        let threshold = (height - row) as f32 / height as f32;
         let mut spans = Vec::with_capacity(visible_bars);
 
         for column in 0..visible_bars {
             let band = render_band_for_column(app, column, visible_bars);
-            let level = level_for_mode(app.mode, band.energy, band.peak, column, visible_bars);
-            let peak = band.peak >= threshold && band.peak < threshold + (1.0 / height as f32);
             let base_style = Style::default().bg(background);
-
-            let (glyph, style) = if let Some(glyph) =
-                active_glyph(level, threshold, row, column, height)
-            {
-                (glyph, base_style.fg(event_color(app.theme, band.last_event, level)))
-            } else if peak {
-                (peak_glyph(column), base_style.fg(theme_peak(app.theme)))
-            } else if app.mode == Mode::Wave && near_wave(level, threshold, height) {
-                (wave_glyph(row, column), base_style.fg(theme_dim(app.theme)))
-            } else {
-                (" ", base_style)
-            };
+            let (glyph, style) =
+                render_cell(app, band, row, column, height, visible_bars, base_style);
 
             spans.push(Span::styled(glyph, style));
         }
@@ -109,20 +96,104 @@ fn render_band_for_column(app: &AppState, column: usize, width: usize) -> Render
     }
 }
 
-fn level_for_mode(mode: Mode, energy: f32, peak: f32, column: usize, width: usize) -> f32 {
-    match mode {
-        Mode::Bars => energy,
-        Mode::Peaks => energy.max(peak * 0.72),
-        Mode::Wave => {
-            let phase = column as f32 / width.max(1) as f32;
-            let ripple = ((phase * std::f32::consts::TAU * 2.0).sin() * 0.5 + 0.5) * 0.10;
-            (energy.powf(0.82) * 0.90 + ripple).clamp(0.0, 1.0)
-        }
+fn render_cell(
+    app: &AppState,
+    band: RenderBand,
+    row: usize,
+    column: usize,
+    height: usize,
+    width: usize,
+    base_style: Style,
+) -> (&'static str, Style) {
+    match app.mode {
+        Mode::Bars => render_bar_cell(app, band, row, column, height, base_style),
+        Mode::Wave => render_wave_cell(app, band, row, column, height, width, base_style),
+        Mode::Peaks => render_peak_cell(app, band, row, column, height, base_style),
     }
 }
 
-fn near_wave(level: f32, threshold: f32, height: usize) -> bool {
-    (level - threshold).abs() <= (1.0 / height.max(1) as f32) * 0.65
+fn render_bar_cell(
+    app: &AppState,
+    band: RenderBand,
+    row: usize,
+    column: usize,
+    height: usize,
+    base_style: Style,
+) -> (&'static str, Style) {
+    let threshold = threshold_for_row(row, height);
+    let peak = band.peak >= threshold && band.peak < threshold + row_step(height);
+
+    if let Some(glyph) = active_glyph(band.energy, threshold, row, column, height) {
+        (glyph, base_style.fg(event_color(app.theme, band.last_event, band.energy)))
+    } else if peak {
+        (peak_glyph(column), base_style.fg(theme_peak(app.theme)))
+    } else {
+        (" ", base_style)
+    }
+}
+
+fn render_wave_cell(
+    app: &AppState,
+    band: RenderBand,
+    row: usize,
+    column: usize,
+    height: usize,
+    width: usize,
+    base_style: Style,
+) -> (&'static str, Style) {
+    let threshold = threshold_for_row(row, height);
+    let contour = wave_contour(band.energy, column, width);
+    let width = row_step(height) * 0.85;
+    let distance = (contour - threshold).abs();
+
+    if distance <= width {
+        let glyph = wave_glyph(row, column, distance / width.max(f32::EPSILON));
+        (glyph, base_style.fg(event_color(app.theme, band.last_event, band.energy)))
+    } else if band.peak > 0.08 && (band.peak - threshold).abs() <= width * 0.70 {
+        (peak_glyph(column), base_style.fg(theme_dim(app.theme)))
+    } else {
+        (" ", base_style)
+    }
+}
+
+fn render_peak_cell(
+    app: &AppState,
+    band: RenderBand,
+    row: usize,
+    column: usize,
+    height: usize,
+    base_style: Style,
+) -> (&'static str, Style) {
+    let threshold = threshold_for_row(row, height);
+    let step = row_step(height);
+    let peak_line = band.peak >= threshold && band.peak < threshold + step;
+    let energy_line = band.energy >= threshold && band.energy < threshold + step * 1.8;
+    let floor_trace = band.energy > 0.20 && threshold < (band.energy * 0.22).max(step);
+
+    if peak_line {
+        (peak_glyph(column), base_style.fg(theme_peak(app.theme)))
+    } else if energy_line {
+        ("╷", base_style.fg(event_color(app.theme, band.last_event, band.energy)))
+    } else if floor_trace {
+        ("·", base_style.fg(theme_dim(app.theme)))
+    } else {
+        (" ", base_style)
+    }
+}
+
+fn threshold_for_row(row: usize, height: usize) -> f32 {
+    (height - row) as f32 / height.max(1) as f32
+}
+
+fn row_step(height: usize) -> f32 {
+    1.0 / height.max(1) as f32
+}
+
+fn wave_contour(energy: f32, column: usize, width: usize) -> f32 {
+    let phase = column as f32 / width.max(1) as f32;
+    let carrier = (phase * std::f32::consts::TAU * 2.0).sin() * 0.5 + 0.5;
+    let harmonic = (phase * std::f32::consts::TAU * 5.0).sin() * 0.5 + 0.5;
+    (energy.powf(0.72) * 0.84 + carrier * 0.10 + harmonic * 0.04).clamp(0.0, 1.0)
 }
 
 fn active_glyph(
@@ -163,13 +234,21 @@ fn peak_glyph(column: usize) -> &'static str {
     }
 }
 
-fn wave_glyph(row: usize, column: usize) -> &'static str {
-    match (row + column) % 5 {
-        0 => "·",
-        1 => "∙",
-        2 => "⋅",
-        3 => "˙",
-        _ => " ",
+fn wave_glyph(row: usize, column: usize, distance_ratio: f32) -> &'static str {
+    if distance_ratio < 0.34 {
+        match (row + column) % 4 {
+            0 => "╱",
+            1 => "━",
+            2 => "╲",
+            _ => "─",
+        }
+    } else {
+        match (row + column) % 4 {
+            0 => "·",
+            1 => "∙",
+            2 => "⋅",
+            _ => "˙",
+        }
     }
 }
 

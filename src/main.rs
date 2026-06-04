@@ -21,6 +21,7 @@ use ratatui::Terminal;
 use crate::global_input::GlobalInput;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
+const CONTROL_GLOBAL_SUPPRESS: Duration = Duration::from_millis(90);
 
 fn main() -> io::Result<()> {
     let config = match parse_args(env::args().skip(1)) {
@@ -49,27 +50,34 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
     let mut app = AppState::new(config);
     let global_input = GlobalInput::start();
     let mut last_tick = Instant::now();
+    let mut suppress_global_until: Option<Instant> = None;
 
     loop {
-        for input_event in global_input.drain() {
-            app.handle_global_key(input_event);
-        }
-
-        terminal.draw(|frame| ui::draw(frame, &app))?;
-
         let elapsed = last_tick.elapsed();
         let timeout = tick_rate.saturating_sub(elapsed);
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) => {
-                    if matches!(app.handle_key(key), AppCommand::Quit) {
-                        break;
+                Event::Key(key) => match app.handle_key(key) {
+                    AppCommand::Quit => break,
+                    AppCommand::ControlHandled => {
+                        suppress_global_until = Some(Instant::now() + CONTROL_GLOBAL_SUPPRESS);
                     }
-                }
+                    AppCommand::None => {}
+                },
                 Event::Resize(_, _) => {}
                 Event::Mouse(_) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
         }
+
+        let now = Instant::now();
+        for input_event in global_input.drain() {
+            if suppress_global_until.is_some_and(|until| now < until) {
+                continue;
+            }
+            app.handle_global_key(input_event);
+        }
+
+        terminal.draw(|frame| ui::draw(frame, &app))?;
 
         if last_tick.elapsed() >= tick_rate {
             let now = Instant::now();
