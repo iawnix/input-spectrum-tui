@@ -84,16 +84,25 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
 
 fn setup_terminal() -> io::Result<Tui> {
     enable_raw_mode()?;
+    let terminal_guard = TerminalGuard;
     let mut out = stdout();
     execute!(
         out,
         EnterAlternateScreen,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
-    Terminal::new(CrosstermBackend::new(out))
+    let terminal = Terminal::new(CrosstermBackend::new(out))?;
+    terminal_guard.disarm();
+    Ok(terminal)
 }
 
 struct TerminalGuard;
+
+impl TerminalGuard {
+    fn disarm(self) {
+        std::mem::forget(self);
+    }
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {

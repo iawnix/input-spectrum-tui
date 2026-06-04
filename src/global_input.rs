@@ -287,6 +287,12 @@ fn start_x11_record_backend(
         Err(_) => {
             debug.log(format!("x11 backend timed out after {} ms", timeout.as_millis()));
             stop.request_stop();
+            let reaper_debug = Arc::clone(&debug);
+            thread::spawn(move || {
+                reaper_debug.log("x11 backend reaper waiting for timed-out init thread");
+                let _ = thread.join();
+                reaper_debug.log("x11 backend timed-out init thread exited");
+            });
             None
         }
     }
