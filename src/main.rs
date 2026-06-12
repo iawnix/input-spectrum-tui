@@ -21,6 +21,12 @@ use ratatui::Terminal;
 use crate::global_input::GlobalInput;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+// After a TUI control key (tab, space, 1/2/3, +/-) we briefly drop global-input
+// events. Both backends (X11 RECORD and evdev) see the same physical key press
+// the terminal just handled, and without this window the control key would also
+// inject an energy packet. 90ms is comfortably above typical X11/evdev delivery
+// latency while still feeling instant for sustained typing.
 const CONTROL_GLOBAL_SUPPRESS: Duration = Duration::from_millis(90);
 
 fn main() -> io::Result<()> {
@@ -52,6 +58,9 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
     let mut last_tick = Instant::now();
     let mut suppress_global_until: Option<Instant> = None;
 
+    // Paint once so the screen isn't blank for the first tick window.
+    terminal.draw(|frame| ui::draw(frame, &app))?;
+
     loop {
         let elapsed = last_tick.elapsed();
         let timeout = tick_rate.saturating_sub(elapsed);
@@ -77,13 +86,16 @@ fn run(terminal: &mut Tui, config: AppConfig) -> io::Result<()> {
             app.handle_global_key(input_event);
         }
 
-        terminal.draw(|frame| ui::draw(frame, &app))?;
-
+        // Tick and redraw are coupled to fps. Without this, a fast event stream
+        // (typing, key auto-repeat) makes event::poll return immediately every
+        // loop iteration and triggers a redraw per event — wasted work, since
+        // the user can't see more than fps frames per second anyway.
         if last_tick.elapsed() >= tick_rate {
             let now = Instant::now();
             let delta = now.duration_since(last_tick);
             app.tick(delta);
             last_tick = now;
+            terminal.draw(|frame| ui::draw(frame, &app))?;
         }
     }
 
@@ -209,7 +221,18 @@ fn parse_mode(value: &str) -> Result<Mode, String> {
 
 fn print_help() {
     println!(
-        "inputspectrum\n\nUSAGE:\n    inputspectrum [--fps 60] [--bars 120] [--theme nord|mono|amber] [--mode bars|wave|peaks]\n\nCONTROLS:\n    q/Esc      quit\n    space      pause/resume\n    tab        switch mode\n    1/2/3      switch theme\n    +/-        sensitivity\n"
+        "{}",
+        r#"inputspectrum
+
+USAGE:
+    inputspectrum [--fps 60] [--bars 120] [--theme nord|mono|amber] [--mode bars|wave|peaks]
+
+CONTROLS:
+    q/Esc      quit
+    space      pause/resume
+    tab        switch mode
+    1/2/3      switch theme
+    +/-        sensitivity"#
     );
 }
 

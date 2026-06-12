@@ -182,6 +182,9 @@ impl AppState {
                 return AppCommand::ControlHandled;
             }
             _ => {
+                if self.paused {
+                    return AppCommand::None;
+                }
                 let band = key_to_band(key.code, self.bands.len());
                 let event_kind = if is_special_key(key.code) {
                     EventKind::SpecialKey
@@ -202,6 +205,9 @@ impl AppState {
     }
 
     pub fn handle_global_key(&mut self, event: GlobalKeyEvent) {
+        if self.paused {
+            return;
+        }
         let band = dynamic_key_band(event.code, self.bands.len(), self.phase);
         self.inject_wave_packet(band, EventKind::Key, KEY_EVENT_SCALE);
         self.key_count += 1;
@@ -412,6 +418,25 @@ mod tests {
         app.record_event(now);
         app.prune_events(now);
         assert_eq!(app.events.len(), 1);
+    }
+
+    #[test]
+    fn paused_state_freezes_injection() {
+        let mut app = AppState::new(AppConfig {
+            bars: 16,
+            ..AppConfig::default()
+        });
+        app.paused = true;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.handle_global_key(GlobalKeyEvent { code: 30 });
+
+        assert_eq!(app.key_count, 0);
+        assert_eq!(app.event_count, 0);
+        assert!(app
+            .bands
+            .iter()
+            .all(|band| band.energy == 0.0 && band.peak == 0.0));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use evdev::{Device, EventType};
+use evdev::{Device, EventType, KeyCode};
 use x11::{xlib, xrecord};
 
 static X11_ERROR_TRAPPED: AtomicBool = AtomicBool::new(false);
@@ -495,12 +495,17 @@ fn x11_record_loop(backend: X11RecordBackend) {
         }
 
         backend.debug.log("x11 loop: stopping");
+        // Callbacks fire only synchronously from XRecordProcessReplies on this
+        // thread. The loop above has exited, so no callback can be in flight by
+        // the time we drop the Box below. Closing the data display before the
+        // drop is still done first as defence-in-depth: XCloseDisplay tears
+        // down any internal state Xlib might use to dispatch further replies.
         backend.stop.disable_context();
         backend.stop.clear_control();
         xrecord::XRecordFreeContext(backend.dpy_control, backend.context);
         xlib::XFree(backend.range_ptr.cast());
-        close_display(backend.dpy_control);
         close_display(backend.dpy_data);
+        close_display(backend.dpy_control);
         drop(backend.callback_state);
     }
 }
@@ -518,6 +523,10 @@ fn start_evdev_keyboard_backend(
             debug.log(format!("evdev skip: cannot open {}", path.display()));
             continue;
         };
+        if !looks_like_keyboard(&device) {
+            debug.log(format!("evdev skip: not a keyboard {}", path.display()));
+            continue;
+        }
         if device.set_nonblocking(true).is_err() {
             debug.log(format!("evdev skip: cannot set nonblocking {}", path.display()));
             continue;
@@ -590,7 +599,24 @@ fn map_evdev_key(event_type: EventType, code: u16, value: i32) -> Option<GlobalK
 }
 
 fn is_non_keyboard_button(code: u16) -> bool {
+    // linux/input-event-codes.h:
+    //   0x100..=0x15f  BTN_MISC..BTN_GEAR_UP  (mouse, joystick, gamepad, stylus)
+    //   0x220..=0x223  BTN_DPAD_*
+    //   0x2c0..=0x2ff  BTN_TRIGGER_HAPPY*
     matches!(code, 0x100..=0x15f | 0x220..=0x223 | 0x2c0..=0x2ff)
+}
+
+/// Heuristic: a device is a keyboard if it advertises EV_KEY and at least one
+/// letter key (KEY_A..KEY_Z = 30..=44). Filters out mice, touchpads, power
+/// buttons, lid switches, etc. that also live under /dev/input/event*.
+fn looks_like_keyboard(device: &Device) -> bool {
+    if !device.supported_events().contains(EventType::KEY) {
+        return false;
+    }
+    let Some(keys) = device.supported_keys() else {
+        return false;
+    };
+    (KeyCode::KEY_A.0..=KeyCode::KEY_Z.0).any(|code| keys.contains(KeyCode(code)))
 }
 
 unsafe fn close_display(display: *mut xlib::Display) {
